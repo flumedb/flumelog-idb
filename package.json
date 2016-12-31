@@ -1,11 +1,11 @@
 {
-  "name": "flumelog-indexed-db",
-  "description": "",
+  "name": "flumelog-idb",
+  "description": "flumelog on IndexedDB",
   "version": "0.0.0",
-  "homepage": "https://github.com/dominictarr/flumelog-indexed-db",
+  "homepage": "https://github.com/dominictarr/flumelog-idb",
   "repository": {
     "type": "git",
-    "url": "git://github.com/dominictarr/flumelog-indexed-db.git"
+    "url": "git://github.com/dominictarr/flumelog-idb.git"
   },
   "dependencies": {
   },
