@@ -5,36 +5,24 @@ var pCont = require('pull-cont')
 
 module.exports = function (dir) {
   var since = Obv()
-
+  var name = 'LOG'
   var env = typeof window == 'object' ? window : self;
 
-//  var DB = ['indexedDB', 'webkitIndexedDB', 'mozIndexedDB'].filter(function (name) {
-//      return env[name];
-//  })[0]
-
   var db
-  var req = env.indexedDB.open(dir, 2) //{version:1, storage: 'persistent'})
+  var req = env.indexedDB.open(dir, 1)
 
   req.onsuccess = function (ev) {
     db = ev.target.result
-    console.log('loaded db', DB = db, req)
-    console.log('object store names', [].slice.call(db.objectStoreNames))
-//    since.set(-1)
-    db.transaction(['LOG'],'readonly').objectStore('LOG')
-    .openKeyCursor(null, 'prev').onsuccess = function (cursor) {
-      if(!cursor) since.set(-1)
-      else since.set(cursor.primaryKey)
+    db.transaction([name],'readonly').objectStore(name)
+    .openKeyCursor(null, 'prev').onsuccess = function (ev) {
+      if(!ev.target.result) since.set(-1)
+      else since.set(ev.target.result.primaryKey)
     }
-
   }
 
   req.onupgradeneeded = function (ev) {
     db = ev.target.result
-    console.log('UPGRADE NEEDED')
-    var req = db.createObjectStore('LOG', {autoIncrement: true, keyPath: 'seq'})
-    req.onsuccess = function () {
-      console.log('object store is ready!')
-    }
+    db.createObjectStore(name, {autoIncrement: true, keyPath: 'seq'})
   }
 
   req.onerror = function (ev) {
@@ -44,10 +32,14 @@ module.exports = function (dir) {
   var append = Append(function (batch, cb) {
     //delay until log has loaded...
     since.once(function () {
-      var tx = db.transaction(['LOG'], 'readwrite'), err
-      tx.oncomplete = function () { cb() }
+      var tx = db.transaction([name], 'readwrite'), err
+      var m = 1
+      tx.oncomplete = function (ev) {
+        since.set(m)
+        cb(null, m)
+      }
       tx.onabort = tx.onerror = function (err) { cb(err || error) }
-      var store = tx.objectStore('LOG')
+      var store = tx.objectStore(name)
 
       var n = batch.length
       function onError (_err) {
@@ -57,13 +49,17 @@ module.exports = function (dir) {
       batch.forEach(function (value) {
         var req = store.put({value: value})
         req.onerror = onError
+        req.onsuccess = function (ev) {
+          m = Math.max(m, ev.target.result)
+        }
       })
     })
   })
 
   function get (seq, cb) {
-    var tx = db.transaction(["LOG"], 'readonly')
-    var req = tx.objectStore("LOG").get(seq)
+    if(!Number.isInteger(seq)) throw new Error('sequence must be integer, was:'+JSON.stringify(seq))
+    var tx = db.transaction([name], 'readonly')
+    var req = tx.objectStore(name).get(seq)
     req.onsuccess = function (ev) {
       cb(null, ev.target.result)
     }
@@ -75,44 +71,51 @@ module.exports = function (dir) {
   return {
     append: append,
     since: since,
-    get: get,
+    get: function (seq, cb) {
+      get(seq, function (err, data) {
+        if(err) cb(err)
+        else cb(null, data.value)
+      })
+    },
     stream: function (opts) {
-      var n = 1
+      var values = opts.values !== false, seqs = opts.seqs !== false
+      var reverse = opts.reverse === true
+      var live = opts.live === true
+      //if seqs, and not values handle specially
+
       return pCont(function (cb) {
-        since.once(function () {
+        since.once(function (_max) {
+          var min  = opts.gt != null ? opts.gt + 1 : opts.gte != null ? opts.gte : 1
+          var max  = opts.lt != null ? opts.lt - 1 : opts.lte != null ? opts.lte : null
+          min = Math.max(min, 1)
+          var cursor = reverse ? max || _max : min
+
           cb(null, function (abort, cb) {
-            if(n === 0) cb(true)
-            else if(n === since.value) cb(true)
-            else
-              get(n, function (err, value) {
-                if(value === undefined) return cb(true)
-                n++
-                cb(null, value)
+
+            function next () {
+              if(!values) {
+                var _cursor = cursor
+                cursor += reverse ? -1 : 1
+                cb(null, _cursor)
+              }
+              else get(cursor, function (err, data) {
+                cursor += reverse ? -1 : 1
+                cb(null, !seqs ? data.value : data)
               })
+            }
+
+            if(abort) return cb(abort)
+            else if(cursor < min) cb(true)
+            else if(max != null && cursor > max) cb(true)
+            else if(cursor > since.value) {
+              if(!live) cb(true)
+              else since.once(next, false)
+            }
+            else next()
           })
         })
       })
     }
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
