@@ -78,6 +78,7 @@ module.exports = function (dir) {
       })
     },
     stream: function (opts) {
+      opts = opts || {}
       var values = opts.values !== false, seqs = opts.seqs !== false
       var reverse = opts.reverse === true
       var live = opts.live === true
