@@ -1,0 +1,1160 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>---</title>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport" />
+<meta charset=utf-8></head>
+<body></body>
+<script>
+(function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
+
+var pull = require('pull-stream')
+var paramap = require('pull-paramap')
+
+var a = []
+while(a.length < 1000) {
+    var v = {seq: a.length, random: Math.random(), time: new Date().toString(), foo: {bar: Math.random() < 0.5, length: 0}}
+    v.length = JSON.stringify(v).length
+    v.length = JSON.stringify(v).length
+    a.push(v)
+  }
+
+function generate () {
+  return pull.infinite(function (e) {
+    return a[~~(Math.random()*a.length)]
+    //return {seq: e, random: Math.random(), time: new Date().toString(), foo: {bar: Math.random() < 0.5}}
+  })
+}
+
+var MB = 1024*1024
+
+function length(data) {
+  return data.length || data.value.length
+}
+
+function print (str) {
+  str = [].slice.call(arguments).map(function (s) {
+    return 'string' === typeof s ? s : ~~(s*1000)/1000
+  }).join(', ')
+
+  if('undefined' !== typeof window) {
+    var pre = document.createElement('pre')
+    pre.textContent = str
+    document.body.appendChild(pre)
+  }
+  console.log(str)
+}
+
+module.exports = function (createLog, N, T) {
+
+  var start = Date.now()
+  var log = createLog()
+  var seqs = []
+
+  print('name, ops/second, mb/second, ops, total-mb, seconds')
+
+  log.since.once(function () {
+  //how many items can you append in 10 seconds.
+    next()
+  })
+
+  function next () {
+    var start = Date.now(), c = 0, total = 0
+    pull(
+      generate(),
+      paramap(function (data, cb) {
+        c ++
+        total += length(data)
+//        return cb()
+        log.append(data, cb)
+      }, 4*1024),
+      pull.drain(function () {
+        if(Date.now() - start > 10e3) return false
+      }, function () {
+        var time = (Date.now() - start)/1000
+        print('append', c/time, (total/MB)/time, c, total/MB, time)
+        next2()
+      })
+    )
+  }
+
+  function next2 () {
+    var total = 0, c = 0, start = Date.now()
+    pull(
+      log.stream(),
+      pull.drain(function (d) {
+        c++
+        total += length(d)
+        seqs.push(d.seq)
+        if(Date.now() - start > 10e3) return false
+      }, function () {
+        var time = (Date.now() - start)/1000
+        print('stream', c/time, (total/MB)/time, c, total/MB, time)
+        next3()
+      })
+    )
+  }
+
+  function next3 () {
+    var total = 0, c = 0, start = Date.now()
+    pull(
+      pull.infinite(function (e) {
+        return seqs[~~(Math.random()*seqs.length)]
+      }),
+      paramap(function (seq, cb) {
+        log.get(seq, cb)
+      }, 1024),
+      pull.drain(function (d) {
+        c++
+        total += length(d)
+        if(Date.now() - start > 10e3) return false
+      }, function () {
+        var time = (Date.now() - start)/1000
+        print('random', c/time, (total/MB)/time, c, total/MB, time)
+      })
+    )
+  }
+}
+
+},{"pull-paramap":2,"pull-stream":3}],2:[function(require,module,exports){
+module.exports = function (map, width, inOrder) {
+  inOrder = inOrder === undefined ? true : inOrder
+  var reading = false, abort
+  return function (read) {
+    var i = 0, j = 0, last = 0
+    var seen = [], started = false, ended = false, _cb, error
+
+    function drain () {
+      if(_cb) {
+        var cb = _cb
+        if(error) {
+          _cb = null
+          return cb(error)
+        }
+        if(Object.hasOwnProperty.call(seen, j)) {
+          _cb = null
+          var data = seen[j]; delete seen[j]; j++
+          cb(null, data)
+          if(width) start()
+        } else if(j >= last && ended) {
+          _cb = null
+          cb(ended)
+        }
+      }
+    }
+
+    function start () {
+      started = true
+      if(ended) return drain()
+      if(reading || width && (i - width >= j)) return
+      reading = true
+      read(abort, function (end, data) {
+        reading = false
+        if(end) {
+          last = i; ended = end
+          drain()
+        } else {
+          var k = i++
+
+          map(data, function (err, data) {
+            if (inOrder) seen[k] = data
+            else seen.push(data)
+            if(err) error = err
+            drain()
+          })
+
+          if(!ended)
+            start()
+
+        }
+      })
+    }
+
+    return function (_abort, cb) {
+      if(_abort)
+        read(ended = abort = _abort, function (err) {
+          if(cb) return cb(err)
+        })
+      else {
+        _cb = cb
+        if(!started) start()
+        drain()
+      }
+    }
+  }
+}
+
+
+},{}],3:[function(require,module,exports){
+'use strict'
+
+var sources  = require('./sources')
+var sinks    = require('./sinks')
+var throughs = require('./throughs')
+
+exports = module.exports = require('./pull')
+
+for(var k in sources)
+  exports[k] = sources[k]
+
+for(var k in throughs)
+  exports[k] = throughs[k]
+
+for(var k in sinks)
+  exports[k] = sinks[k]
+
+
+},{"./pull":4,"./sinks":9,"./sources":16,"./throughs":25}],4:[function(require,module,exports){
+'use strict'
+
+module.exports = function pull (a) {
+  var length = arguments.length
+  if (typeof a === 'function' && a.length === 1) {
+    var args = new Array(length)
+    for(var i = 0; i < length; i++)
+      args[i] = arguments[i]
+    return function (read) {
+      if (args == null) {
+        throw new TypeError("partial sink should only be called once!")
+      }
+
+      // Grab the reference after the check, because it's always an array now
+      // (engines like that kind of consistency).
+      var ref = args
+      args = null
+
+      // Prioritize common case of small number of pulls.
+      switch (length) {
+      case 1: return pull(read, ref[0])
+      case 2: return pull(read, ref[0], ref[1])
+      case 3: return pull(read, ref[0], ref[1], ref[2])
+      case 4: return pull(read, ref[0], ref[1], ref[2], ref[3])
+      default:
+        ref.unshift(read)
+        return pull.apply(null, ref)
+      }
+    }
+  }
+
+  var read = a
+
+  if (read && typeof read.source === 'function') {
+    read = read.source
+  }
+
+  for (var i = 1; i < length; i++) {
+    var s = arguments[i]
+    if (typeof s === 'function') {
+      read = s(read)
+    } else if (s && typeof s === 'object') {
+      s.sink(read)
+      read = s.source
+    }
+  }
+
+  return read
+}
+
+},{}],5:[function(require,module,exports){
+'use strict'
+
+var reduce = require('./reduce')
+
+module.exports = function collect (cb) {
+  return reduce(function (arr, item) {
+    arr.push(item)
+    return arr
+  }, [], cb)
+}
+
+},{"./reduce":12}],6:[function(require,module,exports){
+'use strict'
+
+var reduce = require('./reduce')
+
+module.exports = function concat (cb) {
+  return reduce(function (a, b) {
+    return a + b
+  }, '', cb)
+}
+
+},{"./reduce":12}],7:[function(require,module,exports){
+'use strict'
+
+module.exports = function drain (op, done) {
+  var read, abort
+
+  function sink (_read) {
+    read = _read
+    if(abort) return sink.abort()
+    //this function is much simpler to write if you
+    //just use recursion, but by using a while loop
+    //we do not blow the stack if the stream happens to be sync.
+    ;(function next() {
+        var loop = true, cbed = false
+        while(loop) {
+          cbed = false
+          read(null, function (end, data) {
+            cbed = true
+            if(end = end || abort) {
+              loop = false
+              if(done) done(end === true ? null : end)
+              else if(end && end !== true)
+                throw end
+            }
+            else if(op && false === op(data) || abort) {
+              loop = false
+              read(abort || true, done || function () {})
+            }
+            else if(!loop){
+              next()
+            }
+          })
+          if(!cbed) {
+            loop = false
+            return
+          }
+        }
+      })()
+  }
+
+  sink.abort = function (err, cb) {
+    if('function' == typeof err)
+      cb = err, err = true
+    abort = err || true
+    if(read) return read(abort, cb || function () {})
+  }
+
+  return sink
+}
+
+},{}],8:[function(require,module,exports){
+'use strict'
+
+function id (e) { return e }
+var prop = require('../util/prop')
+var drain = require('./drain')
+
+module.exports = function find (test, cb) {
+  var ended = false
+  if(!cb)
+    cb = test, test = id
+  else
+    test = prop(test) || id
+
+  return drain(function (data) {
+    if(test(data)) {
+      ended = true
+      cb(null, data)
+    return false
+    }
+  }, function (err) {
+    if(ended) return //already called back
+    cb(err === true ? null : err, null)
+  })
+}
+
+
+
+
+
+},{"../util/prop":32,"./drain":7}],9:[function(require,module,exports){
+'use strict'
+
+module.exports = {
+  drain: require('./drain'),
+  onEnd: require('./on-end'),
+  log: require('./log'),
+  find: require('./find'),
+  reduce: require('./reduce'),
+  collect: require('./collect'),
+  concat: require('./concat')
+}
+
+
+},{"./collect":5,"./concat":6,"./drain":7,"./find":8,"./log":10,"./on-end":11,"./reduce":12}],10:[function(require,module,exports){
+'use strict'
+
+var drain = require('./drain')
+
+module.exports = function log (done) {
+  return drain(function (data) {
+    console.log(data)
+  }, done)
+}
+
+},{"./drain":7}],11:[function(require,module,exports){
+'use strict'
+
+var drain = require('./drain')
+
+module.exports = function onEnd (done) {
+  return drain(null, done)
+}
+
+},{"./drain":7}],12:[function(require,module,exports){
+'use strict'
+
+var drain = require('./drain')
+
+module.exports = function reduce (reducer, acc, cb ) {
+  if(!cb) cb = acc, acc = null
+  var sink = drain(function (data) {
+    acc = reducer(acc, data)
+  }, function (err) {
+    cb(err, acc)
+  })
+  if (arguments.length === 2)
+    return function (source) {
+      source(null, function (end, data) {
+        //if ended immediately, and no initial...
+        if(end) return cb(end === true ? null : end)
+        acc = data; sink(source)
+      })
+    }
+  else
+    return sink
+}
+
+},{"./drain":7}],13:[function(require,module,exports){
+'use strict'
+
+module.exports = function count (max) {
+  var i = 0; max = max || Infinity
+  return function (end, cb) {
+    if(end) return cb && cb(end)
+    if(i > max)
+      return cb(true)
+    cb(null, i++)
+  }
+}
+
+
+
+},{}],14:[function(require,module,exports){
+'use strict'
+//a stream that ends immediately.
+module.exports = function empty () {
+  return function (abort, cb) {
+    cb(true)
+  }
+}
+
+},{}],15:[function(require,module,exports){
+'use strict'
+//a stream that errors immediately.
+module.exports = function error (err) {
+  return function (abort, cb) {
+    cb(err)
+  }
+}
+
+
+},{}],16:[function(require,module,exports){
+'use strict'
+module.exports = {
+  keys: require('./keys'),
+  once: require('./once'),
+  values: require('./values'),
+  count: require('./count'),
+  infinite: require('./infinite'),
+  empty: require('./empty'),
+  error: require('./error')
+}
+
+},{"./count":13,"./empty":14,"./error":15,"./infinite":17,"./keys":18,"./once":19,"./values":20}],17:[function(require,module,exports){
+'use strict'
+module.exports = function infinite (generate) {
+  generate = generate || Math.random
+  return function (end, cb) {
+    if(end) return cb && cb(end)
+    return cb(null, generate())
+  }
+}
+
+
+
+},{}],18:[function(require,module,exports){
+'use strict'
+var values = require('./values')
+module.exports = function (object) {
+  return values(Object.keys(object))
+}
+
+
+
+},{"./values":20}],19:[function(require,module,exports){
+'use strict'
+var abortCb = require('../util/abort-cb')
+
+module.exports = function once (value, onAbort) {
+  return function (abort, cb) {
+    if(abort)
+      return abortCb(cb, abort, onAbort)
+    if(value != null) {
+      var _value = value; value = null
+      cb(null, _value)
+    } else
+      cb(true)
+  }
+}
+
+
+
+},{"../util/abort-cb":31}],20:[function(require,module,exports){
+'use strict'
+var abortCb = require('../util/abort-cb')
+
+module.exports = function values (array, onAbort) {
+  if(!array)
+    return function (abort, cb) {
+      if(abort) return abortCb(cb, abort, onAbort)
+      return cb(true)
+    }
+  if(!Array.isArray(array))
+    array = Object.keys(array).map(function (k) {
+      return array[k]
+    })
+  var i = 0
+  return function (abort, cb) {
+    if(abort)
+      return abortCb(cb, abort, onAbort)
+    if(i >= array.length)
+      cb(true)
+    else
+      cb(null, array[i++])
+  }
+}
+
+},{"../util/abort-cb":31}],21:[function(require,module,exports){
+'use strict'
+
+function id (e) { return e }
+var prop = require('../util/prop')
+
+module.exports = function asyncMap (map) {
+  if(!map) return id
+  map = prop(map)
+  var busy = false, abortCb, aborted
+  return function (read) {
+    return function next (abort, cb) {
+      if(aborted) return cb(aborted)
+      if(abort) {
+        aborted = abort
+        if(!busy) read(abort, cb)
+        else read(abort, function () {
+          //if we are still busy, wait for the mapper to complete.
+          if(busy) abortCb = cb
+          else cb(abort)
+        })
+      }
+      else
+        read(null, function (end, data) {
+          if(end) cb(end)
+          else if(aborted) cb(aborted)
+          else {
+            busy = true
+            map(data, function (err, data) {
+              busy = false
+              if(aborted) {
+                cb(aborted)
+                abortCb(aborted)
+              }
+              else if(err) next (err, cb)
+              else cb(null, data)
+            })
+          }
+        })
+    }
+  }
+}
+
+
+
+},{"../util/prop":32}],22:[function(require,module,exports){
+'use strict'
+
+var tester = require('../util/tester')
+var filter = require('./filter')
+
+module.exports = function filterNot (test) {
+  test = tester(test)
+  return filter(function (data) { return !test(data) })
+}
+
+},{"../util/tester":33,"./filter":23}],23:[function(require,module,exports){
+'use strict'
+
+var tester = require('../util/tester')
+
+module.exports = function filter (test) {
+  //regexp
+  test = tester(test)
+  return function (read) {
+    return function next (end, cb) {
+      var sync, loop = true
+      while(loop) {
+        loop = false
+        sync = true
+        read(end, function (end, data) {
+          if(!end && !test(data))
+            return sync ? loop = true : next(end, cb)
+          cb(end, data)
+        })
+        sync = false
+      }
+    }
+  }
+}
+
+
+},{"../util/tester":33}],24:[function(require,module,exports){
+'use strict'
+
+var values = require('../sources/values')
+var once = require('../sources/once')
+
+//convert a stream of arrays or streams into just a stream.
+module.exports = function flatten () {
+  return function (read) {
+    var _read
+    return function (abort, cb) {
+      if (abort) { //abort the current stream, and then stream of streams.
+        _read ? _read(abort, function(err) {
+          read(err || abort, cb)
+        }) : read(abort, cb)
+      }
+      else if(_read) nextChunk()
+      else nextStream()
+
+      function nextChunk () {
+        _read(null, function (err, data) {
+          if (err === true) nextStream()
+          else if (err) {
+            read(true, function(abortErr) {
+              // TODO: what do we do with the abortErr?
+              cb(err)
+            })
+          }
+          else cb(null, data)
+        })
+      }
+      function nextStream () {
+        _read = null
+        read(null, function (end, stream) {
+          if(end)
+            return cb(end)
+          if(Array.isArray(stream) || stream && 'object' === typeof stream)
+            stream = values(stream)
+          else if('function' != typeof stream)
+            stream = once(stream)
+          _read = stream
+          nextChunk()
+        })
+      }
+    }
+  }
+}
+
+
+},{"../sources/once":19,"../sources/values":20}],25:[function(require,module,exports){
+'use strict'
+
+module.exports = {
+  map: require('./map'),
+  asyncMap: require('./async-map'),
+  filter: require('./filter'),
+  filterNot: require('./filter-not'),
+  through: require('./through'),
+  take: require('./take'),
+  unique: require('./unique'),
+  nonUnique: require('./non-unique'),
+  flatten: require('./flatten')
+}
+
+
+
+
+},{"./async-map":21,"./filter":23,"./filter-not":22,"./flatten":24,"./map":26,"./non-unique":27,"./take":28,"./through":29,"./unique":30}],26:[function(require,module,exports){
+'use strict'
+
+function id (e) { return e }
+var prop = require('../util/prop')
+
+module.exports = function map (mapper) {
+  if(!mapper) return id
+  mapper = prop(mapper)
+  return function (read) {
+    return function (abort, cb) {
+      read(abort, function (end, data) {
+        try {
+        data = !end ? mapper(data) : null
+        } catch (err) {
+          return read(err, function () {
+            return cb(err)
+          })
+        }
+        cb(end, data)
+      })
+    }
+  }
+}
+
+},{"../util/prop":32}],27:[function(require,module,exports){
+'use strict'
+
+var unique = require('./unique')
+
+//passes an item through when you see it for the second time.
+module.exports = function nonUnique (field) {
+  return unique(field, true)
+}
+
+},{"./unique":30}],28:[function(require,module,exports){
+'use strict'
+
+//read a number of items and then stop.
+module.exports = function take (test, opts) {
+  opts = opts || {}
+  var last = opts.last || false // whether the first item for which !test(item) should still pass
+  var ended = false
+  if('number' === typeof test) {
+    last = true
+    var n = test; test = function () {
+      return --n
+    }
+  }
+
+  return function (read) {
+
+    function terminate (cb) {
+      read(true, function (err) {
+        last = false; cb(err || true)
+      })
+    }
+
+    return function (end, cb) {
+      if(ended)            last ? terminate(cb) : cb(ended)
+      else if(ended = end) read(ended, cb)
+      else
+        read(null, function (end, data) {
+          if(ended = ended || end) {
+            //last ? terminate(cb) :
+            cb(ended)
+          }
+          else if(!test(data)) {
+            ended = true
+            last ? cb(null, data) : terminate(cb)
+          }
+          else
+            cb(null, data)
+        })
+    }
+  }
+}
+
+},{}],29:[function(require,module,exports){
+'use strict'
+
+//a pass through stream that doesn't change the value.
+module.exports = function through (op, onEnd) {
+  var a = false
+
+  function once (abort) {
+    if(a || !onEnd) return
+    a = true
+    onEnd(abort === true ? null : abort)
+  }
+
+  return function (read) {
+    return function (end, cb) {
+      if(end) once(end)
+      return read(end, function (end, data) {
+        if(!end) op && op(data)
+        else once(end)
+        cb(end, data)
+      })
+    }
+  }
+}
+
+},{}],30:[function(require,module,exports){
+'use strict'
+
+function id (e) { return e }
+var prop = require('../util/prop')
+var filter = require('./filter')
+
+//drop items you have already seen.
+module.exports = function unique (field, invert) {
+  field = prop(field) || id
+  var seen = {}
+  return filter(function (data) {
+    var key = field(data)
+    if(seen[key]) return !!invert //false, by default
+    else seen[key] = true
+    return !invert //true by default
+  })
+}
+
+
+},{"../util/prop":32,"./filter":23}],31:[function(require,module,exports){
+module.exports = function abortCb(cb, abort, onAbort) {
+  cb(abort)
+  onAbort && onAbort(abort === true ? null: abort)
+  return
+}
+
+
+},{}],32:[function(require,module,exports){
+module.exports = function prop (key) {
+  return key && (
+    'string' == typeof key
+    ? function (data) { return data[key] }
+    : 'object' === typeof key && 'function' === typeof key.exec //regexp
+    ? function (data) { var v = key.exec(data); return v && v[0] }
+    : key
+  )
+}
+
+},{}],33:[function(require,module,exports){
+var prop = require('./prop')
+
+function id (e) { return e }
+
+module.exports = function tester (test) {
+  return (
+    'object' === typeof test && 'function' === typeof test.test //regexp
+    ? function (data) { return test.test(data) }
+    : prop (test) || id
+  )
+}
+
+},{"./prop":32}],34:[function(require,module,exports){
+var FlumeLog = require('./')
+require('../bench-flumelog')(function () {
+  return FlumeLog('/tmp/bench-flumelog-offset'+Date.now())
+})
+
+
+},{"../bench-flumelog":1,"./":35}],35:[function(require,module,exports){
+var Obv = require('obv')
+var Append = require('append-batch')
+var pull = require('pull-stream')
+var pCont = require('pull-cont')
+
+module.exports = function (dir) {
+  var since = Obv()
+  var name = 'LOG'
+  var env = typeof window == 'object' ? window : self;
+
+  var db
+  var req = env.indexedDB.open(dir, 1)
+
+  req.onsuccess = function (ev) {
+    db = ev.target.result
+    db.transaction([name],'readonly').objectStore(name)
+    .openKeyCursor(null, 'prev').onsuccess = function (ev) {
+      if(!ev.target.result) since.set(-1)
+      else since.set(ev.target.result.primaryKey)
+    }
+  }
+
+  req.onupgradeneeded = function (ev) {
+    db = ev.target.result
+    db.createObjectStore(name, {autoIncrement: true, keyPath: 'seq'})
+  }
+
+  req.onerror = function (ev) {
+    throw new Error('could not load indexdb:'+dir)
+  }
+
+  var append = Append(function (batch, cb) {
+    //delay until log has loaded...
+    since.once(function () {
+      var tx = db.transaction([name], 'readwrite'), err
+      var m = 1
+      tx.oncomplete = function (ev) {
+        since.set(m)
+        cb(null, m)
+      }
+      tx.onabort = tx.onerror = function (err) { cb(err || error) }
+      var store = tx.objectStore(name)
+
+      var n = batch.length
+      function onError (_err) {
+        err = _err
+        tx.abort()
+      }
+      batch.forEach(function (value) {
+        var req = store.put({value: value})
+        req.onerror = onError
+        req.onsuccess = function (ev) {
+          m = Math.max(m, ev.target.result)
+        }
+      })
+    })
+  })
+
+  function get (seq, cb) {
+    if(!Number.isInteger(seq)) throw new Error('sequence must be integer, was:'+JSON.stringify(seq))
+    var tx = db.transaction([name], 'readonly')
+    var req = tx.objectStore(name).get(seq)
+    req.onsuccess = function (ev) {
+      cb(null, ev.target.result)
+    }
+    req.onerror = function () {
+      cb(new Error('key not found:'+seq))
+    }
+  }
+
+  return {
+    append: append,
+    since: since,
+    get: function (seq, cb) {
+      get(seq, function (err, data) {
+        if(err) cb(err)
+        else cb(null, data.value)
+      })
+    },
+    stream: function (opts) {
+      opts = opts || {}
+      var values = opts.values !== false, seqs = opts.seqs !== false
+      var reverse = opts.reverse === true
+      var live = opts.live === true
+      //if seqs, and not values handle specially
+
+      return pCont(function (cb) {
+        since.once(function (_max) {
+          var min  = opts.gt != null ? opts.gt + 1 : opts.gte != null ? opts.gte : 1
+          var max  = opts.lt != null ? opts.lt - 1 : opts.lte != null ? opts.lte : null
+          min = Math.max(min, 1)
+          var cursor = reverse ? max || _max : min
+
+          cb(null, function (abort, cb) {
+
+            function next () {
+              if(!values) {
+                var _cursor = cursor
+                cursor += reverse ? -1 : 1
+                cb(null, _cursor)
+              }
+              else get(cursor, function (err, data) {
+                cursor += reverse ? -1 : 1
+                cb(null, !seqs ? data.value : data)
+              })
+            }
+
+            if(abort) return cb(abort)
+            else if(cursor < min) cb(true)
+            else if(max != null && cursor > max) cb(true)
+            else if(cursor > since.value) {
+              if(!live) cb(true)
+              else since.once(next, false)
+            }
+            else next()
+          })
+        })
+      })
+    }
+  }
+}
+
+
+},{"append-batch":36,"obv":37,"pull-cont":38,"pull-stream":39}],36:[function(require,module,exports){
+'use strict'
+
+module.exports = function (append) {
+
+  var writing = false, queue = []
+
+  function drain () {
+    if(writing || !queue.length) return
+    writing = true
+    var _queue = queue
+    queue = []
+
+    var values = []
+    _queue.forEach(function (e) {
+      if(Array.isArray(e.value))
+        e.value.forEach(function (e) { values.push(e) })
+      else values.push(e.value)
+    })
+
+    append(values, function (err, max) {
+      writing = false
+      for(var i in _queue) _queue[i].cb(err, max)
+
+      drain() //if there is more to write, write it.
+    })
+  }
+
+
+  function write (value, cb) {
+    queue.push({value: value, cb: cb}); drain()
+  }
+
+  return write
+
+}
+
+
+
+},{}],37:[function(require,module,exports){
+
+module.exports = function (filter) {
+  var value = null, listeners = [], oncers = []
+  function trigger (_value) {
+    value = _value
+    var length = listeners.length
+    for(var i = 0; i< length && value === _value; i++) {
+      var listener = listeners[i](value)
+      //if we remove a listener, must decrement i also
+    }
+    // decrement from length, incase a !immediately
+    // listener is added during a trigger
+    var l = oncers.length
+    var _oncers = oncers
+    oncers = []
+    while(l-- && _value === value) {
+      _oncers.shift()(value)
+    }
+  }
+
+  function many (ready, immediately) {
+    var i = listeners.push(ready) - 1
+    if(value !== null && immediately !== false) ready(value)
+    return function () { //manually remove...
+      //fast path, will happen if an earlier listener has not been removed.
+      if(listeners[i] !== ready)
+        i = listeners.indexOf(ready)
+      listeners.splice(i, 1)
+    }
+  }
+
+  many.set = function (_value) {
+    if(filter ? filter(value, _value) : true) trigger(many.value = _value)
+    return many
+  }
+
+  many.once = function (once, immediately) {
+    if(value !== null && immediately !== false) {
+      once(value)
+      return function () {}
+    }
+    else {
+      var i = oncers.push(once) - 1
+      return function () {
+        if(oncers[i] !== once)
+          i = oncers.indexOf(once)
+      }
+    }
+  }
+
+  return many
+}
+
+
+
+},{}],38:[function(require,module,exports){
+'use strict'
+function isFunction (f) {
+  return 'function' === typeof f
+}
+function isContinuable (c) {
+  return isFunction(c) && c.length === 1
+}
+function isSource (s) {
+  return isFunction(s) && s.length === 2
+}
+
+module.exports = function (continuable) {
+  var read = null
+  return function (abort, cb) {
+    if(read) return read(abort, cb)
+    if(abort) return cb(abort)
+
+    continuable(function again (err, value) {
+      if(err) return cb(err)
+      if(isSource(value)) (read = value)(abort, cb) //if it's a source... then read from it
+      else if(isContinuable(value)) value(again) //if it's another continuable... then continue
+      else throw new Error('not a valid source stream or continuable')
+    })
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+},{}],39:[function(require,module,exports){
+arguments[4][3][0].apply(exports,arguments)
+},{"./pull":40,"./sinks":45,"./sources":52,"./throughs":61,"dup":3}],40:[function(require,module,exports){
+arguments[4][4][0].apply(exports,arguments)
+},{"dup":4}],41:[function(require,module,exports){
+arguments[4][5][0].apply(exports,arguments)
+},{"./reduce":48,"dup":5}],42:[function(require,module,exports){
+arguments[4][6][0].apply(exports,arguments)
+},{"./reduce":48,"dup":6}],43:[function(require,module,exports){
+arguments[4][7][0].apply(exports,arguments)
+},{"dup":7}],44:[function(require,module,exports){
+arguments[4][8][0].apply(exports,arguments)
+},{"../util/prop":68,"./drain":43,"dup":8}],45:[function(require,module,exports){
+arguments[4][9][0].apply(exports,arguments)
+},{"./collect":41,"./concat":42,"./drain":43,"./find":44,"./log":46,"./on-end":47,"./reduce":48,"dup":9}],46:[function(require,module,exports){
+arguments[4][10][0].apply(exports,arguments)
+},{"./drain":43,"dup":10}],47:[function(require,module,exports){
+arguments[4][11][0].apply(exports,arguments)
+},{"./drain":43,"dup":11}],48:[function(require,module,exports){
+arguments[4][12][0].apply(exports,arguments)
+},{"./drain":43,"dup":12}],49:[function(require,module,exports){
+arguments[4][13][0].apply(exports,arguments)
+},{"dup":13}],50:[function(require,module,exports){
+arguments[4][14][0].apply(exports,arguments)
+},{"dup":14}],51:[function(require,module,exports){
+arguments[4][15][0].apply(exports,arguments)
+},{"dup":15}],52:[function(require,module,exports){
+arguments[4][16][0].apply(exports,arguments)
+},{"./count":49,"./empty":50,"./error":51,"./infinite":53,"./keys":54,"./once":55,"./values":56,"dup":16}],53:[function(require,module,exports){
+arguments[4][17][0].apply(exports,arguments)
+},{"dup":17}],54:[function(require,module,exports){
+arguments[4][18][0].apply(exports,arguments)
+},{"./values":56,"dup":18}],55:[function(require,module,exports){
+arguments[4][19][0].apply(exports,arguments)
+},{"../util/abort-cb":67,"dup":19}],56:[function(require,module,exports){
+arguments[4][20][0].apply(exports,arguments)
+},{"../util/abort-cb":67,"dup":20}],57:[function(require,module,exports){
+arguments[4][21][0].apply(exports,arguments)
+},{"../util/prop":68,"dup":21}],58:[function(require,module,exports){
+arguments[4][22][0].apply(exports,arguments)
+},{"../util/tester":69,"./filter":59,"dup":22}],59:[function(require,module,exports){
+arguments[4][23][0].apply(exports,arguments)
+},{"../util/tester":69,"dup":23}],60:[function(require,module,exports){
+arguments[4][24][0].apply(exports,arguments)
+},{"../sources/once":55,"../sources/values":56,"dup":24}],61:[function(require,module,exports){
+arguments[4][25][0].apply(exports,arguments)
+},{"./async-map":57,"./filter":59,"./filter-not":58,"./flatten":60,"./map":62,"./non-unique":63,"./take":64,"./through":65,"./unique":66,"dup":25}],62:[function(require,module,exports){
+arguments[4][26][0].apply(exports,arguments)
+},{"../util/prop":68,"dup":26}],63:[function(require,module,exports){
+arguments[4][27][0].apply(exports,arguments)
+},{"./unique":66,"dup":27}],64:[function(require,module,exports){
+arguments[4][28][0].apply(exports,arguments)
+},{"dup":28}],65:[function(require,module,exports){
+arguments[4][29][0].apply(exports,arguments)
+},{"dup":29}],66:[function(require,module,exports){
+arguments[4][30][0].apply(exports,arguments)
+},{"../util/prop":68,"./filter":59,"dup":30}],67:[function(require,module,exports){
+arguments[4][31][0].apply(exports,arguments)
+},{"dup":31}],68:[function(require,module,exports){
+arguments[4][32][0].apply(exports,arguments)
+},{"dup":32}],69:[function(require,module,exports){
+arguments[4][33][0].apply(exports,arguments)
+},{"./prop":68,"dup":33}]},{},[34]);
+</script>
+</html>
