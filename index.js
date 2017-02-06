@@ -38,7 +38,7 @@ module.exports = function (dir) {
         since.set(m)
         cb(null, m)
       }
-      tx.onabort = tx.onerror = function (err) { cb(err || error) }
+      tx.onabort = tx.onerror = function (error) { cb(err || error) }
       var store = tx.objectStore(name)
 
       var n = batch.length
